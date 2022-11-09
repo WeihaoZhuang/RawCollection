@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.example.android.camera2raw;
+package com.example.android.rawcollection;
 
 import android.app.Activity;
 import android.os.Bundle;
@@ -30,7 +30,7 @@ public class CameraActivity extends Activity {
         setContentView(R.layout.activity_camera);
         if (null == savedInstanceState) {
             getFragmentManager().beginTransaction()
-                    .replace(R.id.container, Camera2RawFragment.newInstance())
+                    .replace(R.id.container, RawCollectionFragment.newInstance())
                     .commit();
         }
     }

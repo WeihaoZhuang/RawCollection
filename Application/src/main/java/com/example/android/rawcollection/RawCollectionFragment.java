@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.example.android.camera2raw;
+package com.example.android.rawcollection;
 
 import android.Manifest;
 import android.app.Activity;
@@ -118,7 +118,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * </li>
  * </ul>
  */
-public class Camera2RawFragment extends Fragment
+public class RawCollectionFragment extends Fragment
         implements View.OnClickListener, FragmentCompat.OnRequestPermissionsResultCallback {
 
     /**
@@ -596,8 +596,8 @@ public class Camera2RawFragment extends Fragment
         }
     };
 
-    public static Camera2RawFragment newInstance() {
-        return new Camera2RawFragment();
+    public static RawCollectionFragment newInstance() {
+        return new RawCollectionFragment();
     }
 
     @Override
