@@ -68,6 +68,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Toast;
 
+import com.example.android.rawcollection.R;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -170,7 +172,7 @@ public class RawCollectionFragment extends Fragment
     /**
      * Tag for the {@link Log}.
      */
-    private static final String TAG = "Camera2RawFragment";
+    private static final String TAG = "RawCollection";
 
     /**
      * Camera state: Device is closed.
@@ -295,13 +297,6 @@ public class RawCollectionFragment extends Fragment
     private Handler mBackgroundHandler;
 
     /**
-     * A reference counted holder wrapping the {@link ImageReader} that handles JPEG image
-     * captures. This is used to allow us to clean up the {@link ImageReader} when all background
-     * tasks using its {@link Image}s have completed.
-     */
-    private RefCountedAutoCloseable<ImageReader> mJpegImageReader;
-
-    /**
      * A reference counted holder wrapping the {@link ImageReader} that handles RAW image captures.
      * This is used to allow us to clean up the {@link ImageReader} when all background tasks using
      * its {@link Image}s have completed.
@@ -397,19 +392,6 @@ public class RawCollectionFragment extends Fragment
 
     };
 
-    /**
-     * This a callback object for the {@link ImageReader}. "onImageAvailable" will be called when a
-     * JPEG image is ready to be saved.
-     */
-    private final ImageReader.OnImageAvailableListener mOnJpegImageAvailableListener
-            = new ImageReader.OnImageAvailableListener() {
-
-        @Override
-        public void onImageAvailable(ImageReader reader) {
-            dequeueAndSaveImage(mJpegResultQueue, mJpegImageReader);
-        }
-
-    };
 
     /**
      * This a callback object for the {@link ImageReader}. "onImageAvailable" will be called when a
@@ -516,21 +498,15 @@ public class RawCollectionFragment extends Fragment
             File rawFile = new File(Environment.
                     getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
                     "RAW_" + currentDateTime + ".dng");
-            File jpegFile = new File(Environment.
-                    getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
-                    "JPEG_" + currentDateTime + ".jpg");
 
             // Look up the ImageSaverBuilder for this request and update it with the file name
             // based on the capture start time.
-            ImageSaver.ImageSaverBuilder jpegBuilder;
             ImageSaver.ImageSaverBuilder rawBuilder;
             int requestId = (int) request.getTag();
             synchronized (mCameraStateLock) {
-                jpegBuilder = mJpegResultQueue.get(requestId);
                 rawBuilder = mRawResultQueue.get(requestId);
             }
 
-            if (jpegBuilder != null) jpegBuilder.setFile(jpegFile);
             if (rawBuilder != null) rawBuilder.setFile(rawFile);
         }
 
@@ -538,29 +514,20 @@ public class RawCollectionFragment extends Fragment
         public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request,
                                        TotalCaptureResult result) {
             int requestId = (int) request.getTag();
-            ImageSaver.ImageSaverBuilder jpegBuilder;
             ImageSaver.ImageSaverBuilder rawBuilder;
             StringBuilder sb = new StringBuilder();
 
             // Look up the ImageSaverBuilder for this request and update it with the CaptureResult
             synchronized (mCameraStateLock) {
-                jpegBuilder = mJpegResultQueue.get(requestId);
                 rawBuilder = mRawResultQueue.get(requestId);
 
-                if (jpegBuilder != null) {
-                    jpegBuilder.setResult(result);
-                    sb.append("Saving JPEG as: ");
-                    sb.append(jpegBuilder.getSaveLocation());
-                }
                 if (rawBuilder != null) {
                     rawBuilder.setResult(result);
-                    if (jpegBuilder != null) sb.append(", ");
                     sb.append("Saving RAW as: ");
                     sb.append(rawBuilder.getSaveLocation());
                 }
 
                 // If we have all the results necessary, save the image to a file in the background.
-                handleCompletionLocked(requestId, jpegBuilder, mJpegResultQueue);
                 handleCompletionLocked(requestId, rawBuilder, mRawResultQueue);
 
                 finishedCaptureLocked();
@@ -608,6 +575,7 @@ public class RawCollectionFragment extends Fragment
 
     @Override
     public void onViewCreated(final View view, Bundle savedInstanceState) {
+        Log.e("error", "onView");
         view.findViewById(R.id.picture).setOnClickListener(this);
         view.findViewById(R.id.info).setOnClickListener(this);
         mTextureView = (AutoFitTextureView) view.findViewById(R.id.texture);
@@ -718,9 +686,6 @@ public class RawCollectionFragment extends Fragment
                         CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
 
                 // For still image captures, we use the largest available size.
-                Size largestJpeg = Collections.max(
-                        Arrays.asList(map.getOutputSizes(ImageFormat.JPEG)),
-                        new CompareSizesByArea());
 
                 Size largestRaw = Collections.max(
                         Arrays.asList(map.getOutputSizes(ImageFormat.RAW_SENSOR)),
@@ -730,13 +695,6 @@ public class RawCollectionFragment extends Fragment
                     // Set up ImageReaders for JPEG and RAW outputs.  Place these in a reference
                     // counted wrapper to ensure they are only closed when all background tasks
                     // using them are finished.
-                    if (mJpegImageReader == null || mJpegImageReader.getAndRetain() == null) {
-                        mJpegImageReader = new RefCountedAutoCloseable<>(
-                                ImageReader.newInstance(largestJpeg.getWidth(),
-                                        largestJpeg.getHeight(), ImageFormat.JPEG, /*maxImages*/5));
-                    }
-                    mJpegImageReader.get().setOnImageAvailableListener(
-                            mOnJpegImageAvailableListener, mBackgroundHandler);
 
                     if (mRawImageReader == null || mRawImageReader.getAndRetain() == null) {
                         mRawImageReader = new RefCountedAutoCloseable<>(
@@ -871,10 +829,6 @@ public class RawCollectionFragment extends Fragment
                     mCameraDevice.close();
                     mCameraDevice = null;
                 }
-                if (null != mJpegImageReader) {
-                    mJpegImageReader.close();
-                    mJpegImageReader = null;
-                }
                 if (null != mRawImageReader) {
                     mRawImageReader.close();
                     mRawImageReader = null;
@@ -935,7 +889,6 @@ public class RawCollectionFragment extends Fragment
 
             // Here, we create a CameraCaptureSession for camera preview.
             mCameraDevice.createCaptureSession(Arrays.asList(surface,
-                            mJpegImageReader.get().getSurface(),
                             mRawImageReader.get().getSurface()), new CameraCaptureSession.StateCallback() {
                         @Override
                         public void onConfigured(CameraCaptureSession cameraCaptureSession) {
@@ -1214,7 +1167,6 @@ public class RawCollectionFragment extends Fragment
             final CaptureRequest.Builder captureBuilder =
                     mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
 
-            captureBuilder.addTarget(mJpegImageReader.get().getSurface());
             captureBuilder.addTarget(mRawImageReader.get().getSurface());
 
             // Use the same AE and AF modes as the preview.
@@ -1222,8 +1174,6 @@ public class RawCollectionFragment extends Fragment
 
             // Set orientation.
             int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
-            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION,
-                    sensorToDeviceRotation(mCharacteristics, rotation));
 
             // Set request tag to easily track results in callbacks.
             captureBuilder.setTag(mRequestCounter.getAndIncrement());
@@ -1232,12 +1182,9 @@ public class RawCollectionFragment extends Fragment
 
             // Create an ImageSaverBuilder in which to collect results, and add it to the queue
             // of active requests.
-            ImageSaver.ImageSaverBuilder jpegBuilder = new ImageSaver.ImageSaverBuilder(activity)
-                    .setCharacteristics(mCharacteristics);
             ImageSaver.ImageSaverBuilder rawBuilder = new ImageSaver.ImageSaverBuilder(activity)
                     .setCharacteristics(mCharacteristics);
 
-            mJpegResultQueue.put((int) request.getTag(), jpegBuilder);
             mRawResultQueue.put((int) request.getTag(), rawBuilder);
 
             mCaptureSession.capture(request, mCaptureCallback, mBackgroundHandler);
@@ -1369,23 +1316,6 @@ public class RawCollectionFragment extends Fragment
             boolean success = false;
             int format = mImage.getFormat();
             switch (format) {
-                case ImageFormat.JPEG: {
-                    ByteBuffer buffer = mImage.getPlanes()[0].getBuffer();
-                    byte[] bytes = new byte[buffer.remaining()];
-                    buffer.get(bytes);
-                    FileOutputStream output = null;
-                    try {
-                        output = new FileOutputStream(mFile);
-                        output.write(bytes);
-                        success = true;
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    } finally {
-                        mImage.close();
-                        closeOutput(output);
-                    }
-                    break;
-                }
                 case ImageFormat.RAW_SENSOR: {
                     DngCreator dngCreator = new DngCreator(mCharacteristics, mCaptureResult);
                     FileOutputStream output = null;
