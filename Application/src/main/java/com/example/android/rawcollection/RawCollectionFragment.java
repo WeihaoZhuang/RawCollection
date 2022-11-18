@@ -60,12 +60,14 @@ import android.support.v4.app.ActivityCompat;
 import android.util.Log;
 import android.util.Size;
 import android.util.SparseIntArray;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.OrientationEventListener;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.SeekBar;
 import android.widget.Toast;
 
 import com.example.android.rawcollection.R;
@@ -342,6 +344,15 @@ public class RawCollectionFragment extends Fragment
     private long mCaptureTimer;
 
     //**********************************************************************************************
+    int[] isoArray =new int[] {100,400,1000,1600,2000};
+    int[] shutterSpeedArray = new int[] {100,200,500,1000,2000,4000,8000,16000};
+    SeekBar mSeekBarShutterSpeed;
+    SeekBar mSeekBarISO;
+    private CameraCaptureSession mPreviewSession;
+    private CaptureRequest mPreviewRequest;
+
+    CaptureRequest.Builder captureBuilder;
+    //**********************************************************************************************
 
     /**
      * {@link CameraDevice.StateCallback} is called when the currently active {@link CameraDevice}
@@ -413,7 +424,6 @@ public class RawCollectionFragment extends Fragment
      */
     private CameraCaptureSession.CaptureCallback mPreCaptureCallback
             = new CameraCaptureSession.CaptureCallback() {
-
         private void process(CaptureResult result) {
             synchronized (mCameraStateLock) {
                 switch (mState) {
@@ -460,7 +470,7 @@ public class RawCollectionFragment extends Fragment
                         if (readyToCapture && mPendingUserCaptures > 0) {
                             // Capture once for each user tap of the "Picture" button.
                             while (mPendingUserCaptures > 0) {
-                                captureStillPictureLocked();
+//                                captureStillPictureLocked();
                                 mPendingUserCaptures--;
                             }
                             // After this, the camera will go back to the normal state of preview.
@@ -570,16 +580,44 @@ public class RawCollectionFragment extends Fragment
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
-        return inflater.inflate(R.layout.fragment_camera2_basic, container, false);
-    }
+        final View v = inflater.inflate(R.layout.fragment_camera2_basic, container, false);
+        v.setOnKeyListener(new View.OnKeyListener() {
+            @Override
+            public boolean onKey(View v, int keyCode, KeyEvent event) {
+                // KeyEvent.ACTION_DOWN以外のイベントを無視する
+                // （これがないとKeyEvent.ACTION_UPもフックしてしまう）
+                if(event.getAction() != KeyEvent.ACTION_DOWN) {
+                    return false;
+                }
 
+                switch(keyCode) {
+                    case KeyEvent.KEYCODE_VOLUME_UP:
+                        // TODO:音量増加キーが押された時のイベント
+                        takePicture();
+                        Log.e("error", "press");
+                        return true;
+                    case KeyEvent.KEYCODE_VOLUME_DOWN:
+                        // TODO:音量減少キーが押された時のイベント
+                        takePicture();
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        });
+
+        // View#setFocusableInTouchModeでtrueをセットしておくこと
+        v.setFocusableInTouchMode(true);
+        return v;
+
+
+    }
     @Override
     public void onViewCreated(final View view, Bundle savedInstanceState) {
         Log.e("error", "onView");
         view.findViewById(R.id.picture).setOnClickListener(this);
-        view.findViewById(R.id.info).setOnClickListener(this);
         mTextureView = (AutoFitTextureView) view.findViewById(R.id.texture);
-
+        mSeekBarISO = view.findViewById(R.id.seekBarISO);
         // Setup a new OrientationEventListener.  This is used to handle rotation events like a
         // 180 degree rotation that do not normally trigger a call to onCreate to do view re-layout
         // or otherwise cause the preview TextureView's size to change.
@@ -886,7 +924,6 @@ public class RawCollectionFragment extends Fragment
             mPreviewRequestBuilder
                     = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             mPreviewRequestBuilder.addTarget(surface);
-
             // Here, we create a CameraCaptureSession for camera preview.
             mCameraDevice.createCaptureSession(Arrays.asList(surface,
                             mRawImageReader.get().getSurface()), new CameraCaptureSession.StateCallback() {
@@ -899,7 +936,7 @@ public class RawCollectionFragment extends Fragment
                                 }
 
                                 try {
-                                    setup3AControlsLocked(mPreviewRequestBuilder);
+//                                    setup3AControlsLocked(mPreviewRequestBuilder);
                                     // Finally, we start displaying the camera preview.
                                     cameraCaptureSession.setRepeatingRequest(
                                             mPreviewRequestBuilder.build(),
@@ -920,9 +957,13 @@ public class RawCollectionFragment extends Fragment
                         }
                     }, mBackgroundHandler
             );
+
+            captureBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            captureBuilder.addTarget(mRawImageReader.get().getSurface());
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
+        setSeekBarISO();
     }
 
     /**
@@ -933,51 +974,7 @@ public class RawCollectionFragment extends Fragment
      *
      * @param builder the builder to configure.
      */
-    private void setup3AControlsLocked(CaptureRequest.Builder builder) {
-        // Enable auto-magical 3A run by camera device
-        builder.set(CaptureRequest.CONTROL_MODE,
-                CaptureRequest.CONTROL_MODE_AUTO);
 
-        Float minFocusDist =
-                mCharacteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
-
-        // If MINIMUM_FOCUS_DISTANCE is 0, lens is fixed-focus and we need to skip the AF run.
-        mNoAFRun = (minFocusDist == null || minFocusDist == 0);
-
-        if (!mNoAFRun) {
-            // If there is a "continuous picture" mode available, use it, otherwise default to AUTO.
-            if (contains(mCharacteristics.get(
-                            CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES),
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)) {
-                builder.set(CaptureRequest.CONTROL_AF_MODE,
-                        CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            } else {
-                builder.set(CaptureRequest.CONTROL_AF_MODE,
-                        CaptureRequest.CONTROL_AF_MODE_AUTO);
-            }
-        }
-
-        // If there is an auto-magical flash control mode available, use it, otherwise default to
-        // the "on" mode, which is guaranteed to always be available.
-        if (contains(mCharacteristics.get(
-                        CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES),
-                CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH)) {
-            builder.set(CaptureRequest.CONTROL_AE_MODE,
-                    CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
-        } else {
-            builder.set(CaptureRequest.CONTROL_AE_MODE,
-                    CaptureRequest.CONTROL_AE_MODE_ON);
-        }
-
-        // If there is an auto-magical white balance control mode available, use it.
-        if (contains(mCharacteristics.get(
-                        CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES),
-                CaptureRequest.CONTROL_AWB_MODE_AUTO)) {
-            // Allow AWB to run auto-magically if this device supports this
-            builder.set(CaptureRequest.CONTROL_AWB_MODE,
-                    CaptureRequest.CONTROL_AWB_MODE_AUTO);
-        }
-    }
 
     /**
      * Configure the necessary {@link android.graphics.Matrix} transformation to `mTextureView`,
@@ -1157,27 +1154,30 @@ public class RawCollectionFragment extends Fragment
      * <p/>
      * Call this only with {@link #mCameraStateLock} held.
      */
-    private void captureStillPictureLocked() {
+    private void captureStillPictureLocked(int iso) {
         try {
+            Log.e("error", "into stillpiclocked");
             final Activity activity = getActivity();
             if (null == activity || null == mCameraDevice) {
                 return;
             }
             // This is the CaptureRequest.Builder that we use to take a picture.
-            final CaptureRequest.Builder captureBuilder =
-                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-
-            captureBuilder.addTarget(mRawImageReader.get().getSurface());
+//            captureBuilder =
+//                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+//
+//            captureBuilder.addTarget(mRawImageReader.get().getSurface());
 
             // Use the same AE and AF modes as the preview.
-            setup3AControlsLocked(captureBuilder);
+//            setup3AControlsLocked(captureBuilder);
 
             // Set orientation.
             int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
 
             // Set request tag to easily track results in callbacks.
             captureBuilder.setTag(mRequestCounter.getAndIncrement());
-
+            captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
+            captureBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
+            captureBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, (long) 56000);
             CaptureRequest request = captureBuilder.build();
 
             // Create an ImageSaverBuilder in which to collect results, and add it to the queue
@@ -1774,5 +1774,105 @@ public class RawCollectionFragment extends Fragment
         }
 
     }
+    public void setSeekBarISO() {
+        long maxISO = 2000;//mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE).getUpper();
+//        long minISO = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE).getLower();
+        final int isoStep = 20;
+        mSeekBarISO.setMax((int)(maxISO/isoStep));
+        mSeekBarISO.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int iso = progress*isoStep;
+                Log.e("error", "setISO"+iso);
+//                mTextViewISO.setX(seekBar.getThumb().getBounds().left);
+//                mTextViewISO.setText(String.valueOf(iso));
+//                SurfaceTexture texture = mTextureView.getSurfaceTexture();
+//                // We configure the size of default buffer to be the size of camera preview we want.
+//                texture.setDefaultBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
+//
+//                // This is the output Surface we need to start preview.
+//                Surface surface = new Surface(texture);
+//                try {
+//                    mPreviewRequestBuilder
+//                            = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+//                } catch (CameraAccessException e) {
+//                    e.printStackTrace();
+//                }
+//                mPreviewRequestBuilder.addTarget(surface);
+//                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
+//                mPreviewRequestBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
+//
+//                mPreviewRequestBuilder.addTarget(surface);
+//
+//                mPreviewRequest = mPreviewRequestBuilder.build();
+//                CaptureRequest request = captureBuilder.build();
+//                try {
+//                    mCaptureSession.capture(request, mCaptureCallback, mBackgroundHandler);
+//                } catch (CameraAccessException e) {
+//                    e.printStackTrace();
+//                }
 
+                // Here, we create a CameraCaptureSession for camera preview.
+
+//                try {
+//                    if(mBackgroundHandler==null)
+//                        Log.e("eror", "back null");
+//                    if(mPreCaptureCallback==null)
+//                        Log.e("error", "call null");
+//                    mPreviewSession.setRepeatingRequest(mPreviewRequest, mPreCaptureCallback, mBackgroundHandler);
+//                } catch (CameraAccessException e) {
+//                    e.printStackTrace();
+//                }
+
+
+//                try {
+//                    mCameraDevice.createCaptureSession(Arrays.asList(surface,
+//                                    mRawImageReader.get().getSurface()), new CameraCaptureSession.StateCallback() {
+//                                @Override
+//                                public void onConfigured(CameraCaptureSession cameraCaptureSession) {
+//                                    synchronized (mCameraStateLock) {
+//                                        // The camera is already closed
+//                                        if (null == mCameraDevice) {
+//                                            return;
+//                                        }
+//
+//                                        try {
+//    //                                    setup3AControlsLocked(mPreviewRequestBuilder);
+//                                            // Finally, we start displaying the camera preview.
+//                                            cameraCaptureSession.setRepeatingRequest(
+//                                                    mPreviewRequestBuilder.build(),
+//                                                    mPreCaptureCallback, mBackgroundHandler);
+//                                            mState = STATE_PREVIEW;
+//                                        } catch (CameraAccessException | IllegalStateException e) {
+//                                            e.printStackTrace();
+//                                            return;
+//                                        }
+//                                        // When the session is ready, we start displaying the preview.
+//                                        mCaptureSession = cameraCaptureSession;
+//                                    }
+//                                }
+//
+//                                @Override
+//                                public void onConfigureFailed(CameraCaptureSession cameraCaptureSession) {
+//                                    showToast("Failed to configure camera.");
+//                                }
+//                            }, mBackgroundHandler
+//                    );
+//                } catch (CameraAccessException ex) {
+//                    ex.printStackTrace();
+//                }
+
+                captureStillPictureLocked(iso);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                //write custom code to on start progress
+            }
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+
+            }
+        });
+    }
 }
