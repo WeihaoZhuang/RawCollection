@@ -21,6 +21,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.DialogFragment;
+import android.app.DownloadManager;
 import android.app.Fragment;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -48,6 +49,7 @@ import android.media.ImageReader;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -55,6 +57,7 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
+import android.support.annotation.RequiresApi;
 import android.support.v13.app.FragmentCompat;
 import android.support.v4.app.ActivityCompat;
 import android.util.Log;
@@ -68,6 +71,7 @@ import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.SeekBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import com.example.android.rawcollection.R;
@@ -78,6 +82,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -86,6 +91,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Queue;
 import java.util.TreeMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -333,7 +339,7 @@ public class RawCollectionFragment extends Fragment
     /**
      * The state of the camera device.
      *
-     * @see #mPreCaptureCallback
+     * @see #
      */
     private int mState = STATE_CLOSED;
 
@@ -344,14 +350,28 @@ public class RawCollectionFragment extends Fragment
     private long mCaptureTimer;
 
     //**********************************************************************************************
-    int[] isoArray =new int[] {100,400,1000,1600,2000};
     int[] shutterSpeedArray = new int[] {100,200,500,1000,2000,4000,8000,16000};
+    Size largestRaw;
     SeekBar mSeekBarShutterSpeed;
     SeekBar mSeekBarISO;
+    SeekBar mSeekBarFrames;
+
+    TextView mTextViewShutter;
+    TextView mTextViewISO;
+    TextView mTextViewFrames;
     private CameraCaptureSession mPreviewSession;
     private CaptureRequest mPreviewRequest;
 
     CaptureRequest.Builder captureBuilder;
+    int mISO;
+    long mExposureTime;
+    int mFrames = 1;
+    int gtISO;
+    long toUS = 1000000000;
+    long gtExposureTime;
+
+    int[] isoArray = {50,100,200,400,800,1600,2000} ;
+    Queue<CaptureRequest> capRequestList;
     //**********************************************************************************************
 
     /**
@@ -417,84 +437,6 @@ public class RawCollectionFragment extends Fragment
         }
 
     };
-
-    /**
-     * A {@link CameraCaptureSession.CaptureCallback} that handles events for the preview and
-     * pre-capture sequence.
-     */
-    private CameraCaptureSession.CaptureCallback mPreCaptureCallback
-            = new CameraCaptureSession.CaptureCallback() {
-        private void process(CaptureResult result) {
-            synchronized (mCameraStateLock) {
-                switch (mState) {
-                    case STATE_PREVIEW: {
-                        // We have nothing to do when the camera preview is running normally.
-                        break;
-                    }
-                    case STATE_WAITING_FOR_3A_CONVERGENCE: {
-                        boolean readyToCapture = true;
-                        if (!mNoAFRun) {
-                            Integer afState = result.get(CaptureResult.CONTROL_AF_STATE);
-                            if (afState == null) {
-                                break;
-                            }
-
-                            // If auto-focus has reached locked state, we are ready to capture
-                            readyToCapture =
-                                    (afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
-                                            afState == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED);
-                        }
-
-                        // If we are running on an non-legacy device, we should also wait until
-                        // auto-exposure and auto-white-balance have converged as well before
-                        // taking a picture.
-                        if (!isLegacyLocked()) {
-                            Integer aeState = result.get(CaptureResult.CONTROL_AE_STATE);
-                            Integer awbState = result.get(CaptureResult.CONTROL_AWB_STATE);
-                            if (aeState == null || awbState == null) {
-                                break;
-                            }
-
-                            readyToCapture = readyToCapture &&
-                                    aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED &&
-                                    awbState == CaptureResult.CONTROL_AWB_STATE_CONVERGED;
-                        }
-
-                        // If we haven't finished the pre-capture sequence but have hit our maximum
-                        // wait timeout, too bad! Begin capture anyway.
-                        if (!readyToCapture && hitTimeoutLocked()) {
-                            Log.w(TAG, "Timed out waiting for pre-capture sequence to complete.");
-                            readyToCapture = true;
-                        }
-
-                        if (readyToCapture && mPendingUserCaptures > 0) {
-                            // Capture once for each user tap of the "Picture" button.
-                            while (mPendingUserCaptures > 0) {
-//                                captureStillPictureLocked();
-                                mPendingUserCaptures--;
-                            }
-                            // After this, the camera will go back to the normal state of preview.
-                            mState = STATE_PREVIEW;
-                        }
-                    }
-                }
-            }
-        }
-
-        @Override
-        public void onCaptureProgressed(CameraCaptureSession session, CaptureRequest request,
-                                        CaptureResult partialResult) {
-            process(partialResult);
-        }
-
-        @Override
-        public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request,
-                                       TotalCaptureResult result) {
-            process(result);
-        }
-
-    };
-
     /**
      * A {@link CameraCaptureSession.CaptureCallback} that handles the still JPEG and RAW capture
      * request.
@@ -523,26 +465,24 @@ public class RawCollectionFragment extends Fragment
         @Override
         public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request,
                                        TotalCaptureResult result) {
+            Log.e("error", "on AE completed");
             int requestId = (int) request.getTag();
             ImageSaver.ImageSaverBuilder rawBuilder;
             StringBuilder sb = new StringBuilder();
-
+            gtISO = result.get(CaptureResult.SENSOR_SENSITIVITY);
+            gtExposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
             // Look up the ImageSaverBuilder for this request and update it with the CaptureResult
             synchronized (mCameraStateLock) {
                 rawBuilder = mRawResultQueue.get(requestId);
-
                 if (rawBuilder != null) {
                     rawBuilder.setResult(result);
                     sb.append("Saving RAW as: ");
                     sb.append(rawBuilder.getSaveLocation());
                 }
-
                 // If we have all the results necessary, save the image to a file in the background.
                 handleCompletionLocked(requestId, rawBuilder, mRawResultQueue);
-
-                finishedCaptureLocked();
+//                finishedCaptureLocked();
             }
-
             showToast(sb.toString());
         }
 
@@ -553,13 +493,81 @@ public class RawCollectionFragment extends Fragment
             synchronized (mCameraStateLock) {
                 mJpegResultQueue.remove(requestId);
                 mRawResultQueue.remove(requestId);
-                finishedCaptureLocked();
+//                finishedCaptureLocked();
             }
             showToast("Capture failed!");
         }
 
     };
 
+    private final CameraCaptureSession.CaptureCallback mCaptureCallbackBurst
+            = new CameraCaptureSession.CaptureCallback() {
+        @Override
+        public void onCaptureStarted(CameraCaptureSession session, CaptureRequest request,
+                                     long timestamp, long frameNumber) {
+            String currentDateTime = generateTimestamp();
+            File rawFile = new File(Environment.
+                    getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
+                    "RAW_" + currentDateTime + ".dng");
+
+            // Look up the ImageSaverBuilder for this request and update it with the file name
+            // based on the capture start time.
+            ImageSaver.ImageSaverBuilder rawBuilder;
+            int requestId = (int) request.getTag();
+            synchronized (mCameraStateLock) {
+                rawBuilder = mRawResultQueue.get(requestId);
+            }
+
+            if (rawBuilder != null) rawBuilder.setFile(rawFile);
+        }
+
+        @Override
+        public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request,
+                                       TotalCaptureResult result) {
+            int requestId = (int) request.getTag();
+            ImageSaver.ImageSaverBuilder rawBuilder;
+            StringBuilder sb = new StringBuilder();
+            // Look up the ImageSaverBuilder for this request and update it with the CaptureResult
+            synchronized (mCameraStateLock) {
+                rawBuilder = mRawResultQueue.get(requestId);
+                if (rawBuilder != null) {
+                    rawBuilder.setResult(result);
+                    sb.append("Saving RAW as: ");
+                    sb.append(rawBuilder.getSaveLocation());
+                }
+                // If we have all the results necessary, save the image to a file in the background.
+                handleCompletionLocked(requestId, rawBuilder, mRawResultQueue);
+//                finishedCaptureLocked();
+
+                showToast(sb.toString());
+
+
+                try {
+                    if(!capRequestList.isEmpty()){
+                        CaptureRequest capRequest = capRequestList.remove();
+                        mCaptureSession.capture(capRequest, mCaptureCallbackBurst, mBackgroundHandler);
+                    }
+                } catch (CameraAccessException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        @Override
+        public void onCaptureFailed(CameraCaptureSession session, CaptureRequest request,
+                                    CaptureFailure failure) {
+            int requestId = (int) request.getTag();
+            synchronized (mCameraStateLock) {
+                mJpegResultQueue.remove(requestId);
+                mRawResultQueue.remove(requestId);
+//                finishedCaptureLocked();
+            }
+            showToast("Capture failed!");
+        }
+
+    };
+    
+    
     /**
      * A {@link Handler} for showing {@link Toast}s on the UI thread.
      */
@@ -592,12 +600,10 @@ public class RawCollectionFragment extends Fragment
 
                 switch(keyCode) {
                     case KeyEvent.KEYCODE_VOLUME_UP:
-                        // TODO:音量増加キーが押された時のイベント
                         takePicture();
                         Log.e("error", "press");
                         return true;
                     case KeyEvent.KEYCODE_VOLUME_DOWN:
-                        // TODO:音量減少キーが押された時のイベント
                         takePicture();
                         return true;
                     default:
@@ -618,6 +624,11 @@ public class RawCollectionFragment extends Fragment
         view.findViewById(R.id.picture).setOnClickListener(this);
         mTextureView = (AutoFitTextureView) view.findViewById(R.id.texture);
         mSeekBarISO = view.findViewById(R.id.seekBarISO);
+        mSeekBarShutterSpeed = view.findViewById(R.id.seekBarShutterSpeed);
+        mTextViewShutter = view.findViewById(R.id.textViewShutterSpeed);
+        mTextViewISO = view.findViewById(R.id.textViewISO);
+        mSeekBarFrames = view.findViewById(R.id.seekBarFrames);
+        mTextViewFrames = view.findViewById(R.id.textViewFrames);
         // Setup a new OrientationEventListener.  This is used to handle rotation events like a
         // 180 degree rotation that do not normally trigger a call to onCreate to do view re-layout
         // or otherwise cause the preview TextureView's size to change.
@@ -725,7 +736,7 @@ public class RawCollectionFragment extends Fragment
 
                 // For still image captures, we use the largest available size.
 
-                Size largestRaw = Collections.max(
+                largestRaw = Collections.max(
                         Arrays.asList(map.getOutputSizes(ImageFormat.RAW_SENSOR)),
                         new CompareSizesByArea());
 
@@ -734,14 +745,8 @@ public class RawCollectionFragment extends Fragment
                     // counted wrapper to ensure they are only closed when all background tasks
                     // using them are finished.
 
-                    if (mRawImageReader == null || mRawImageReader.getAndRetain() == null) {
-                        mRawImageReader = new RefCountedAutoCloseable<>(
-                                ImageReader.newInstance(largestRaw.getWidth(),
-                                        largestRaw.getHeight(), ImageFormat.RAW_SENSOR, /*maxImages*/ 5));
-                    }
-                    mRawImageReader.get().setOnImageAvailableListener(
-                            mOnRawImageAvailableListener, mBackgroundHandler);
 
+                    initRawImageReader(largestRaw);
                     mCharacteristics = characteristics;
                     mCameraId = cameraId;
                 }
@@ -934,13 +939,13 @@ public class RawCollectionFragment extends Fragment
                                 if (null == mCameraDevice) {
                                     return;
                                 }
-
                                 try {
+
 //                                    setup3AControlsLocked(mPreviewRequestBuilder);
                                     // Finally, we start displaying the camera preview.
                                     cameraCaptureSession.setRepeatingRequest(
                                             mPreviewRequestBuilder.build(),
-                                            mPreCaptureCallback, mBackgroundHandler);
+                                            null, mBackgroundHandler);
                                     mState = STATE_PREVIEW;
                                 } catch (CameraAccessException | IllegalStateException e) {
                                     e.printStackTrace();
@@ -958,12 +963,12 @@ public class RawCollectionFragment extends Fragment
                     }, mBackgroundHandler
             );
 
-            captureBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureBuilder.addTarget(mRawImageReader.get().getSurface());
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
         setSeekBarISO();
+        setSeekBarShutterSpeed();
+        setSeekBarFrames();
     }
 
     /**
@@ -1108,31 +1113,36 @@ public class RawCollectionFragment extends Fragment
      */
     private void takePicture() {
         synchronized (mCameraStateLock) {
-            mPendingUserCaptures++;
+
 
             // If we already triggered a pre-capture sequence, or are in a state where we cannot
             // do this, return immediately.
             if (mState != STATE_PREVIEW) {
                 return;
             }
+            autoExposureCapture();
 
+            capRequestList = new ArrayDeque<>();
+            for(int i=0 ; i<isoArray.length; i++) {//isoArray.length; i++) {
+                Log.e(("error"), "step:"+i);
+                for (int j = 7; j < 14; j++) {//14; j++) {
+                    mISO = isoArray[i];
+                    double frequency = Math.pow(2, j);
+                    mExposureTime = (long) ((1 / frequency) * toUS);
+                    for (int k = 0; k < mFrames; k++) {
+                        capRequestList.add(initManualExposureCapture(mISO, mExposureTime));
+                    }
+                }
+            }
+            CaptureRequest request = capRequestList.remove();
             try {
-                // Trigger an auto-focus run if camera is capable. If the camera is already focused,
-                // this should do nothing.
-                if (!mNoAFRun) {
-                    mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                            CameraMetadata.CONTROL_AF_TRIGGER_START);
-                }
+                mCaptureSession.capture(request, mCaptureCallbackBurst, mBackgroundHandler);
+            } catch (CameraAccessException e) {
+                e.printStackTrace();
+            }
 
-                // If this is not a legacy device, we can also trigger an auto-exposure metering
-                // run.
-                if (!isLegacyLocked()) {
-                    // Tell the camera to lock focus.
-                    mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
-                            CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START);
-                }
 
-                // Update state machine to wait for auto-focus, auto-exposure, and
+            // Update state machine to wait for auto-focus, auto-exposure, and
                 // auto-white-balance (aka. "3A") to converge.
                 mState = STATE_WAITING_FOR_3A_CONVERGENCE;
 
@@ -1140,11 +1150,6 @@ public class RawCollectionFragment extends Fragment
                 startTimerLocked();
 
                 // Replace the existing repeating request with one with updated 3A triggers.
-                mCaptureSession.capture(mPreviewRequestBuilder.build(), mPreCaptureCallback,
-                        mBackgroundHandler);
-            } catch (CameraAccessException e) {
-                e.printStackTrace();
-            }
         }
     }
 
@@ -1154,69 +1159,100 @@ public class RawCollectionFragment extends Fragment
      * <p/>
      * Call this only with {@link #mCameraStateLock} held.
      */
-    private void captureStillPictureLocked(int iso) {
+
+    private void autoExposureCapture(){
         try {
             Log.e("error", "into stillpiclocked");
             final Activity activity = getActivity();
             if (null == activity || null == mCameraDevice) {
                 return;
             }
-            // This is the CaptureRequest.Builder that we use to take a picture.
-//            captureBuilder =
-//                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-//
-//            captureBuilder.addTarget(mRawImageReader.get().getSurface());
+//        initRawImageReader(largestRaw);
+        captureBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+        captureBuilder.addTarget(mRawImageReader.get().getSurface());
+        captureBuilder.setTag(mRequestCounter.getAndIncrement());
+        captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+        CaptureRequest request = captureBuilder.build();
+        ImageSaver.ImageSaverBuilder rawBuilder = new ImageSaver.ImageSaverBuilder(activity)
+                .setCharacteristics(mCharacteristics);
+        mRawResultQueue.put((int) request.getTag(), rawBuilder);
+        mCaptureSession.capture(request, mCaptureCallback, mBackgroundHandler);
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+    }
 
-            // Use the same AE and AF modes as the preview.
-//            setup3AControlsLocked(captureBuilder);
-
-            // Set orientation.
-            int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
-
-            // Set request tag to easily track results in callbacks.
+    private void manualExposureCapture(int iso, long exposureTime){
+        try {
+//            Log.e("error", "into manual stillpiclocked");
+            final Activity activity = getActivity();
+            if (null == activity || null == mCameraDevice) {
+                return;
+            }
+//            initRawImageReader(largestRaw);
+            captureBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            captureBuilder.addTarget(mRawImageReader.get().getSurface());
             captureBuilder.setTag(mRequestCounter.getAndIncrement());
             captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
             captureBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
-            captureBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, (long) 56000);
+            captureBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureTime);
             CaptureRequest request = captureBuilder.build();
-
-            // Create an ImageSaverBuilder in which to collect results, and add it to the queue
-            // of active requests.
             ImageSaver.ImageSaverBuilder rawBuilder = new ImageSaver.ImageSaverBuilder(activity)
                     .setCharacteristics(mCharacteristics);
-
             mRawResultQueue.put((int) request.getTag(), rawBuilder);
 
-            mCaptureSession.capture(request, mCaptureCallback, mBackgroundHandler);
-
+            mCaptureSession.capture(request, mCaptureCallbackBurst, mBackgroundHandler);
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
+
     }
 
-    /**
-     * Called after a RAW/JPEG capture has completed; resets the AF trigger state for the
-     * pre-capture sequence.
-     * <p/>
-     * Call this only with {@link #mCameraStateLock} held.
-     */
-    private void finishedCaptureLocked() {
+    private CaptureRequest initManualExposureCapture(int iso, long exposureTime){
         try {
-            // Reset the auto-focus trigger in case AF didn't run quickly enough.
-            if (!mNoAFRun) {
-                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                        CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
-
-                mCaptureSession.capture(mPreviewRequestBuilder.build(), mPreCaptureCallback,
-                        mBackgroundHandler);
-
-                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                        CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
-            }
+            final Activity activity = getActivity();
+            captureBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            captureBuilder.addTarget(mRawImageReader.get().getSurface());
+            captureBuilder.setTag(mRequestCounter.getAndIncrement());
+            captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
+            captureBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
+            captureBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureTime);
+            CaptureRequest request = captureBuilder.build();
+            ImageSaver.ImageSaverBuilder rawBuilder = new ImageSaver.ImageSaverBuilder(activity)
+                    .setCharacteristics(mCharacteristics);
+            mRawResultQueue.put((int) request.getTag(), rawBuilder);
+            return request;
+//            mCaptureSession.capture(request, mCaptureCallbackBurst, mBackgroundHandler);
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
+        return null;
     }
+
+
+//    /**
+//     * Called after a RAW/JPEG capture has completed; resets the AF trigger state for the
+//     * pre-capture sequence.
+//     * <p/>
+//     * Call this only with {@link #mCameraStateLock} held.
+//     */
+//    private void finishedCaptureLocked() {
+//        try {
+//            // Reset the auto-focus trigger in case AF didn't run quickly enough.
+//            if (!mNoAFRun) {
+//                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+//                        CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
+//
+//                mCaptureSession.capture(mPreviewRequestBuilder.build(), mPreCaptureCallback,
+//                        mBackgroundHandler);
+//
+//                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+//                        CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
+//            }
+//        } catch (CameraAccessException e) {
+//            e.printStackTrace();
+//        }
+//    }
 
     /**
      * Retrieve the next {@link Image} from a reference counted {@link ImageReader}, retaining
@@ -1775,94 +1811,13 @@ public class RawCollectionFragment extends Fragment
 
     }
     public void setSeekBarISO() {
-        long maxISO = 2000;//mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE).getUpper();
-//        long minISO = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE).getLower();
-        final int isoStep = 20;
-        mSeekBarISO.setMax((int)(maxISO/isoStep));
+        mISO = isoArray[0];
+        mSeekBarISO.setMax(isoArray.length-1);
         mSeekBarISO.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                int iso = progress*isoStep;
-                Log.e("error", "setISO"+iso);
-//                mTextViewISO.setX(seekBar.getThumb().getBounds().left);
-//                mTextViewISO.setText(String.valueOf(iso));
-//                SurfaceTexture texture = mTextureView.getSurfaceTexture();
-//                // We configure the size of default buffer to be the size of camera preview we want.
-//                texture.setDefaultBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
-//
-//                // This is the output Surface we need to start preview.
-//                Surface surface = new Surface(texture);
-//                try {
-//                    mPreviewRequestBuilder
-//                            = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-//                } catch (CameraAccessException e) {
-//                    e.printStackTrace();
-//                }
-//                mPreviewRequestBuilder.addTarget(surface);
-//                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
-//                mPreviewRequestBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
-//
-//                mPreviewRequestBuilder.addTarget(surface);
-//
-//                mPreviewRequest = mPreviewRequestBuilder.build();
-//                CaptureRequest request = captureBuilder.build();
-//                try {
-//                    mCaptureSession.capture(request, mCaptureCallback, mBackgroundHandler);
-//                } catch (CameraAccessException e) {
-//                    e.printStackTrace();
-//                }
-
-                // Here, we create a CameraCaptureSession for camera preview.
-
-//                try {
-//                    if(mBackgroundHandler==null)
-//                        Log.e("eror", "back null");
-//                    if(mPreCaptureCallback==null)
-//                        Log.e("error", "call null");
-//                    mPreviewSession.setRepeatingRequest(mPreviewRequest, mPreCaptureCallback, mBackgroundHandler);
-//                } catch (CameraAccessException e) {
-//                    e.printStackTrace();
-//                }
-
-
-//                try {
-//                    mCameraDevice.createCaptureSession(Arrays.asList(surface,
-//                                    mRawImageReader.get().getSurface()), new CameraCaptureSession.StateCallback() {
-//                                @Override
-//                                public void onConfigured(CameraCaptureSession cameraCaptureSession) {
-//                                    synchronized (mCameraStateLock) {
-//                                        // The camera is already closed
-//                                        if (null == mCameraDevice) {
-//                                            return;
-//                                        }
-//
-//                                        try {
-//    //                                    setup3AControlsLocked(mPreviewRequestBuilder);
-//                                            // Finally, we start displaying the camera preview.
-//                                            cameraCaptureSession.setRepeatingRequest(
-//                                                    mPreviewRequestBuilder.build(),
-//                                                    mPreCaptureCallback, mBackgroundHandler);
-//                                            mState = STATE_PREVIEW;
-//                                        } catch (CameraAccessException | IllegalStateException e) {
-//                                            e.printStackTrace();
-//                                            return;
-//                                        }
-//                                        // When the session is ready, we start displaying the preview.
-//                                        mCaptureSession = cameraCaptureSession;
-//                                    }
-//                                }
-//
-//                                @Override
-//                                public void onConfigureFailed(CameraCaptureSession cameraCaptureSession) {
-//                                    showToast("Failed to configure camera.");
-//                                }
-//                            }, mBackgroundHandler
-//                    );
-//                } catch (CameraAccessException ex) {
-//                    ex.printStackTrace();
-//                }
-
-                captureStillPictureLocked(iso);
+                mISO = isoArray[progress];
+                mTextViewISO.setText(String.valueOf(mISO));
             }
 
             @Override
@@ -1874,5 +1829,60 @@ public class RawCollectionFragment extends Fragment
 
             }
         });
+    }
+
+    public void setSeekBarShutterSpeed() {
+        double frequency = Math.pow(2, 1+5);
+        mExposureTime = (long) ((1/frequency) * toUS);
+        mSeekBarShutterSpeed.setMax(9);
+        mSeekBarShutterSpeed.setMin(1);
+        mSeekBarShutterSpeed.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                double frequency = Math.pow(2, progress+5);
+                mExposureTime =   (long) ((1/frequency) * toUS);
+                mTextViewShutter.setText("1/"+String.valueOf((int) frequency));
+                Log.e("errpr", "exp is:1/"+(Math.pow(2, (progress+5))));
+                Log.e("errpr", "exp is:"+mExposureTime);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                //write custom code to on start progress
+            }
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+
+            }
+        });
+    }
+
+    public void setSeekBarFrames() {
+        mSeekBarFrames.setMax(10);
+        mSeekBarFrames.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                mFrames=progress;
+                mTextViewFrames.setText(String.valueOf(mFrames));
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                //write custom code to on start progress
+            }
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+
+            }
+        });
+    }
+
+    void initRawImageReader(Size largestRaw) {
+        mRawImageReader = new RefCountedAutoCloseable<>(
+                ImageReader.newInstance(largestRaw.getWidth(),
+                        largestRaw.getHeight(), ImageFormat.RAW_SENSOR, /*maxImages*/ 5));
+//                    }
+        mRawImageReader.get().setOnImageAvailableListener(
+                mOnRawImageAvailableListener, mBackgroundHandler);
     }
 }
