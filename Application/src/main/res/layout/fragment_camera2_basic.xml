@@ -30,7 +30,7 @@
         android:layout_below="@id/texture"
         android:layout_alignParentStart="true"
         android:layout_alignParentBottom="true"
-        android:background="#4285f4"
+        android:background="#FFFFFF"
         android:orientation="vertical">
 
         <Button
@@ -40,28 +40,58 @@
             android:layout_gravity="center"
             android:text="@string/picture" />
 
+        <!--        <SeekBar-->
+        <!--            android:id="@+id/seekBarISO"-->
+        <!--            android:layout_width="match_parent"-->
+        <!--            android:layout_height="wrap_content" />-->
 
-        <SeekBar
-            android:id="@+id/seekBarISO"
+        <CheckBox
+            android:id="@+id/checkBoxGt"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:text="Collect Ground Truth" />
 
-        <TextView
-            android:id="@+id/textViewISO"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="ISO" />
+            android:orientation="horizontal">
 
-        <SeekBar
-            android:id="@+id/seekBarShutterSpeed"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            <TextView
+                android:id="@+id/textViewISOSelect"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_centerInParent="true"
+                android:background="@android:drawable/editbox_background"
+                android:drawableRight="@android:drawable/arrow_down_float"
+                android:hint="Select ISO" />
 
-        <TextView
-            android:id="@+id/textViewShutterSpeed"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Shutter Speed" />
+            <TextView
+                android:id="@+id/textViewShutterSpeedSelect"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_centerInParent="true"
+                android:background="@android:drawable/editbox_background"
+                android:drawableRight="@android:drawable/arrow_down_float"
+                android:hint="Select Shutter Speed" />
+        </LinearLayout>
+
+        <!--        <TextView-->
+        <!--            android:id="@+id/textViewISO"-->
+        <!--            android:layout_width="wrap_content"-->
+        <!--            android:layout_height="wrap_content"-->
+        <!--            android:text="ISO" />-->
+
+        <!--        <SeekBar-->
+        <!--            android:id="@+id/seekBarShutterSpeed"-->
+        <!--            android:layout_width="match_parent"-->
+        <!--            android:layout_height="wrap_content" />-->
+
+        <!--        <TextView-->
+        <!--            android:id="@+id/textViewShutterSpeed"-->
+        <!--            android:layout_width="match_parent"-->
+        <!--            android:layout_height="wrap_content"-->
+        <!--            android:text="Shutter Speed" />-->
+
 
         <SeekBar
             android:id="@+id/seekBarFrames"

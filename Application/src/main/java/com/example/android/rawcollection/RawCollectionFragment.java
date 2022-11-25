@@ -28,6 +28,7 @@ import android.content.DialogInterface;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
 import android.graphics.Matrix;
+import android.graphics.Paint;
 import android.graphics.Point;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
@@ -70,7 +71,11 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.SeekBar;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -96,6 +101,8 @@ import java.util.TreeMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 /**
  * A fragment that demonstrates use of the Camera2 API to capture RAW and JPEG photos.
@@ -359,19 +366,42 @@ public class RawCollectionFragment extends Fragment
     TextView mTextViewShutter;
     TextView mTextViewISO;
     TextView mTextViewFrames;
+    TextView mTextViewISOSelect;
+    TextView mTextViewShutterSelect;
+
+    CheckBox mCheckBoxGt;
+
     private CameraCaptureSession mPreviewSession;
     private CaptureRequest mPreviewRequest;
 
     CaptureRequest.Builder captureBuilder;
-    int mISO;
+
     long mExposureTime;
     int mFrames = 1;
+    int mFramesIdx = 0;
     int gtISO;
+    int minISO;
+    float gtFocalLen;
     long toUS = 1000000000;
     long gtExposureTime;
 
     int[] isoArray = {50,100,200,400,800,1600,2000} ;
-    Queue<CaptureRequest> capRequestList;
+    String[] isoStringArray = {"50","100","200","400","800","1600","2000"} ;
+    final boolean[] selectedISO = {false,false,false,false,false,false,false};//[isoStringArray.length];
+    final ArrayList<Integer> isoList = new ArrayList<>();
+
+    long[] shutterArray = {128, 256, 512, 1024, 2048, 4096, 8192, 16384};
+    String[] shutterStringArray = {"1/128", "1/256", "1/512", "1/1024", "1/2048", "1/4096", "1/8192", "1/16384"} ;
+    final boolean[] selectedShutter = {false,false,false,false,false,false, false, false};
+    final ArrayList<Integer> shutterList = new ArrayList<>();
+
+    Queue<CaptureRequest> capRequestList = new ArrayDeque<>();
+    Queue<Integer> isGtList = new ArrayDeque<>();
+
+    String currentDateTime;
+
+    boolean canAuto = true;
+    private RefCountedAutoCloseable<ImageReader> mRawImageReaderEmpty;
     //**********************************************************************************************
 
     /**
@@ -435,7 +465,6 @@ public class RawCollectionFragment extends Fragment
         public void onImageAvailable(ImageReader reader) {
             dequeueAndSaveImage(mRawResultQueue, mRawImageReader);
         }
-
     };
     /**
      * A {@link CameraCaptureSession.CaptureCallback} that handles the still JPEG and RAW capture
@@ -446,44 +475,48 @@ public class RawCollectionFragment extends Fragment
         @Override
         public void onCaptureStarted(CameraCaptureSession session, CaptureRequest request,
                                      long timestamp, long frameNumber) {
-            String currentDateTime = generateTimestamp();
-            File rawFile = new File(Environment.
-                    getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
-                    "RAW_" + currentDateTime + ".dng");
 
-            // Look up the ImageSaverBuilder for this request and update it with the file name
-            // based on the capture start time.
-            ImageSaver.ImageSaverBuilder rawBuilder;
-            int requestId = (int) request.getTag();
-            synchronized (mCameraStateLock) {
-                rawBuilder = mRawResultQueue.get(requestId);
-            }
-
-            if (rawBuilder != null) rawBuilder.setFile(rawFile);
         }
 
         @Override
         public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request,
                                        TotalCaptureResult result) {
-            Log.e("error", "on AE completed");
-            int requestId = (int) request.getTag();
-            ImageSaver.ImageSaverBuilder rawBuilder;
-            StringBuilder sb = new StringBuilder();
-            gtISO = result.get(CaptureResult.SENSOR_SENSITIVITY);
-            gtExposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
-            // Look up the ImageSaverBuilder for this request and update it with the CaptureResult
             synchronized (mCameraStateLock) {
+                gtISO = result.get(CaptureResult.SENSOR_SENSITIVITY);
+                gtExposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+                gtFocalLen = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
+                minISO = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE).getLower();
+
+                float isoRatio = gtISO / minISO;
+                long gtExposure = (long) (gtExposureTime * isoRatio);
+                for (int k = 0; k < mFrames; k++) {
+                    isGtList.add(1);
+                    capRequestList.add(initManualExposureCapture(minISO, gtExposure, k));
+                }
+
+                int requestId = (int) request.getTag();
+
+                StringBuilder sb = new StringBuilder();
+                File rawFile = new File(Environment.
+                        getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
+                        "RAW_" + currentDateTime + "_Auto" + ".dng");
+                int tag = (int) request.getTag();
+
+                ImageSaver.ImageSaverBuilder rawBuilder;
                 rawBuilder = mRawResultQueue.get(requestId);
                 if (rawBuilder != null) {
+                    rawBuilder.setFile(rawFile);
                     rawBuilder.setResult(result);
                     sb.append("Saving RAW as: ");
                     sb.append(rawBuilder.getSaveLocation());
                 }
-                // If we have all the results necessary, save the image to a file in the background.
                 handleCompletionLocked(requestId, rawBuilder, mRawResultQueue);
-//                finishedCaptureLocked();
+
+                showToast(sb.toString());
+//            ImageSaver.ImageSaverBuilder rawBuilder;
+//            int requestId = (int) request.getTag();
+//            rawBuilder = mRawResultQueue.get(requestId);
             }
-            showToast(sb.toString());
         }
 
         @Override
@@ -491,7 +524,6 @@ public class RawCollectionFragment extends Fragment
                                     CaptureFailure failure) {
             int requestId = (int) request.getTag();
             synchronized (mCameraStateLock) {
-                mJpegResultQueue.remove(requestId);
                 mRawResultQueue.remove(requestId);
 //                finishedCaptureLocked();
             }
@@ -505,20 +537,6 @@ public class RawCollectionFragment extends Fragment
         @Override
         public void onCaptureStarted(CameraCaptureSession session, CaptureRequest request,
                                      long timestamp, long frameNumber) {
-            String currentDateTime = generateTimestamp();
-            File rawFile = new File(Environment.
-                    getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
-                    "RAW_" + currentDateTime + ".dng");
-
-            // Look up the ImageSaverBuilder for this request and update it with the file name
-            // based on the capture start time.
-            ImageSaver.ImageSaverBuilder rawBuilder;
-            int requestId = (int) request.getTag();
-            synchronized (mCameraStateLock) {
-                rawBuilder = mRawResultQueue.get(requestId);
-            }
-
-            if (rawBuilder != null) rawBuilder.setFile(rawFile);
         }
 
         @Override
@@ -528,16 +546,25 @@ public class RawCollectionFragment extends Fragment
             ImageSaver.ImageSaverBuilder rawBuilder;
             StringBuilder sb = new StringBuilder();
             // Look up the ImageSaverBuilder for this request and update it with the CaptureResult
+            int iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
+            long exposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+            int frequency = (int) (1/((float) exposureTime/toUS));
+            int isGtFlag =  isGtList.remove();
+
+            File rawFile = new File(Environment.
+                    getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
+                    "RAW_" + currentDateTime + "_"+ iso + "_" + frequency + "_"+ isGtFlag + "_" + mFramesIdx + ".dng");
+            int tag = (int) request.getTag();
+
             synchronized (mCameraStateLock) {
                 rawBuilder = mRawResultQueue.get(requestId);
                 if (rawBuilder != null) {
+                    rawBuilder.setFile(rawFile);
                     rawBuilder.setResult(result);
                     sb.append("Saving RAW as: ");
                     sb.append(rawBuilder.getSaveLocation());
                 }
-                // If we have all the results necessary, save the image to a file in the background.
                 handleCompletionLocked(requestId, rawBuilder, mRawResultQueue);
-//                finishedCaptureLocked();
 
                 showToast(sb.toString());
 
@@ -551,6 +578,8 @@ public class RawCollectionFragment extends Fragment
                     e.printStackTrace();
                 }
             }
+            mFramesIdx = mFramesIdx+1;
+            if(mFramesIdx>=mFrames) mFramesIdx=0;
         }
 
         @Override
@@ -558,9 +587,7 @@ public class RawCollectionFragment extends Fragment
                                     CaptureFailure failure) {
             int requestId = (int) request.getTag();
             synchronized (mCameraStateLock) {
-                mJpegResultQueue.remove(requestId);
                 mRawResultQueue.remove(requestId);
-//                finishedCaptureLocked();
             }
             showToast("Capture failed!");
         }
@@ -601,7 +628,6 @@ public class RawCollectionFragment extends Fragment
                 switch(keyCode) {
                     case KeyEvent.KEYCODE_VOLUME_UP:
                         takePicture();
-                        Log.e("error", "press");
                         return true;
                     case KeyEvent.KEYCODE_VOLUME_DOWN:
                         takePicture();
@@ -620,27 +646,20 @@ public class RawCollectionFragment extends Fragment
     }
     @Override
     public void onViewCreated(final View view, Bundle savedInstanceState) {
-        Log.e("error", "onView");
         view.findViewById(R.id.picture).setOnClickListener(this);
         mTextureView = (AutoFitTextureView) view.findViewById(R.id.texture);
-        mSeekBarISO = view.findViewById(R.id.seekBarISO);
-        mSeekBarShutterSpeed = view.findViewById(R.id.seekBarShutterSpeed);
-        mTextViewShutter = view.findViewById(R.id.textViewShutterSpeed);
-        mTextViewISO = view.findViewById(R.id.textViewISO);
         mSeekBarFrames = view.findViewById(R.id.seekBarFrames);
         mTextViewFrames = view.findViewById(R.id.textViewFrames);
-        // Setup a new OrientationEventListener.  This is used to handle rotation events like a
-        // 180 degree rotation that do not normally trigger a call to onCreate to do view re-layout
-        // or otherwise cause the preview TextureView's size to change.
-        mOrientationListener = new OrientationEventListener(getActivity(),
-                SensorManager.SENSOR_DELAY_NORMAL) {
-            @Override
-            public void onOrientationChanged(int orientation) {
-                if (mTextureView != null && mTextureView.isAvailable()) {
-                    configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
-                }
-            }
-        };
+
+        mTextViewISOSelect = view.findViewById(R.id.textViewISOSelect);
+        initSelection(mTextViewISOSelect, isoStringArray, isoList, selectedISO);
+
+        mTextViewShutterSelect = view.findViewById(R.id.textViewShutterSpeedSelect);
+        initSelection(mTextViewShutterSelect, shutterStringArray, shutterList, selectedShutter);
+
+        mCheckBoxGt = view.findViewById(R.id.checkBoxGt);
+
+        initOrientationEventListener();
     }
 
     @Override
@@ -946,7 +965,7 @@ public class RawCollectionFragment extends Fragment
                                     cameraCaptureSession.setRepeatingRequest(
                                             mPreviewRequestBuilder.build(),
                                             null, mBackgroundHandler);
-                                    mState = STATE_PREVIEW;
+//                                    mState = STATE_PREVIEW;
                                 } catch (CameraAccessException | IllegalStateException e) {
                                     e.printStackTrace();
                                     return;
@@ -966,8 +985,8 @@ public class RawCollectionFragment extends Fragment
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
-        setSeekBarISO();
-        setSeekBarShutterSpeed();
+//        setSeekBarISO();
+//        setSeekBarShutterSpeed();
         setSeekBarFrames();
     }
 
@@ -1113,24 +1132,20 @@ public class RawCollectionFragment extends Fragment
      */
     private void takePicture() {
         synchronized (mCameraStateLock) {
-
-
-            // If we already triggered a pre-capture sequence, or are in a state where we cannot
-            // do this, return immediately.
-            if (mState != STATE_PREVIEW) {
-                return;
-            }
-            autoExposureCapture();
-
+            currentDateTime = generateTimestamp();
             capRequestList = new ArrayDeque<>();
-            for(int i=0 ; i<isoArray.length; i++) {//isoArray.length; i++) {
-                Log.e(("error"), "step:"+i);
-                for (int j = 7; j < 14; j++) {//14; j++) {
-                    mISO = isoArray[i];
-                    double frequency = Math.pow(2, j);
+
+            if(mCheckBoxGt.isChecked()) {
+                autoExposureCapture();
+            }
+
+            for(int iso: isoList){
+                for(int shutter: shutterList){
+                    double frequency = shutterArray[shutter];
                     mExposureTime = (long) ((1 / frequency) * toUS);
                     for (int k = 0; k < mFrames; k++) {
-                        capRequestList.add(initManualExposureCapture(mISO, mExposureTime));
+                        isGtList.add(0);
+                        capRequestList.add(initManualExposureCapture(isoArray[iso], mExposureTime, 0));
                     }
                 }
             }
@@ -1141,15 +1156,6 @@ public class RawCollectionFragment extends Fragment
                 e.printStackTrace();
             }
 
-
-            // Update state machine to wait for auto-focus, auto-exposure, and
-                // auto-white-balance (aka. "3A") to converge.
-                mState = STATE_WAITING_FOR_3A_CONVERGENCE;
-
-                // Start a timer for the pre-capture sequence.
-                startTimerLocked();
-
-                // Replace the existing repeating request with one with updated 3A triggers.
         }
     }
 
@@ -1162,67 +1168,46 @@ public class RawCollectionFragment extends Fragment
 
     private void autoExposureCapture(){
         try {
-            Log.e("error", "into stillpiclocked");
-            final Activity activity = getActivity();
-            if (null == activity || null == mCameraDevice) {
-                return;
-            }
-//        initRawImageReader(largestRaw);
-        captureBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-        captureBuilder.addTarget(mRawImageReader.get().getSurface());
-        captureBuilder.setTag(mRequestCounter.getAndIncrement());
-        captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-        CaptureRequest request = captureBuilder.build();
-        ImageSaver.ImageSaverBuilder rawBuilder = new ImageSaver.ImageSaverBuilder(activity)
-                .setCharacteristics(mCharacteristics);
-        mRawResultQueue.put((int) request.getTag(), rawBuilder);
-        mCaptureSession.capture(request, mCaptureCallback, mBackgroundHandler);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void manualExposureCapture(int iso, long exposureTime){
-        try {
-//            Log.e("error", "into manual stillpiclocked");
-            final Activity activity = getActivity();
-            if (null == activity || null == mCameraDevice) {
-                return;
-            }
-//            initRawImageReader(largestRaw);
             captureBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             captureBuilder.addTarget(mRawImageReader.get().getSurface());
             captureBuilder.setTag(mRequestCounter.getAndIncrement());
-            captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
-            captureBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
-            captureBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureTime);
+            captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+            captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            captureBuilder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO);
             CaptureRequest request = captureBuilder.build();
+
+            final Activity activity = getActivity();
             ImageSaver.ImageSaverBuilder rawBuilder = new ImageSaver.ImageSaverBuilder(activity)
                     .setCharacteristics(mCharacteristics);
             mRawResultQueue.put((int) request.getTag(), rawBuilder);
 
-            mCaptureSession.capture(request, mCaptureCallbackBurst, mBackgroundHandler);
+            mCaptureSession.capture(request, mCaptureCallback, mBackgroundHandler);
+
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
-
     }
 
-    private CaptureRequest initManualExposureCapture(int iso, long exposureTime){
+
+    private CaptureRequest initManualExposureCapture(int iso, long exposureTime, int isGT){
         try {
             final Activity activity = getActivity();
             captureBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             captureBuilder.addTarget(mRawImageReader.get().getSurface());
             captureBuilder.setTag(mRequestCounter.getAndIncrement());
             captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF);
+            captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+//            captureBuilder.set(CaptureRequest.LENS_FILTER_DENSITY, gtFocalLen);
             captureBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
             captureBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureTime);
+//            captureBuilder.setTag(isGT);
+
             CaptureRequest request = captureBuilder.build();
+//
             ImageSaver.ImageSaverBuilder rawBuilder = new ImageSaver.ImageSaverBuilder(activity)
                     .setCharacteristics(mCharacteristics);
             mRawResultQueue.put((int) request.getTag(), rawBuilder);
             return request;
-//            mCaptureSession.capture(request, mCaptureCallbackBurst, mBackgroundHandler);
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
@@ -1230,29 +1215,7 @@ public class RawCollectionFragment extends Fragment
     }
 
 
-//    /**
-//     * Called after a RAW/JPEG capture has completed; resets the AF trigger state for the
-//     * pre-capture sequence.
-//     * <p/>
-//     * Call this only with {@link #mCameraStateLock} held.
-//     */
-//    private void finishedCaptureLocked() {
-//        try {
-//            // Reset the auto-focus trigger in case AF didn't run quickly enough.
-//            if (!mNoAFRun) {
-//                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-//                        CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
-//
-//                mCaptureSession.capture(mPreviewRequestBuilder.build(), mPreCaptureCallback,
-//                        mBackgroundHandler);
-//
-//                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-//                        CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
-//            }
-//        } catch (CameraAccessException e) {
-//            e.printStackTrace();
-//        }
-//    }
+
 
     /**
      * Retrieve the next {@link Image} from a reference counted {@link ImageReader}, retaining
@@ -1746,17 +1709,7 @@ public class RawCollectionFragment extends Fragment
         }
     }
 
-    /**
-     * Check if we are using a device that only supports the LEGACY hardware level.
-     * <p/>
-     * Call this only with {@link #mCameraStateLock} held.
-     *
-     * @return true if this is a legacy device.
-     */
-    private boolean isLegacyLocked() {
-        return mCharacteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) ==
-                CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY;
-    }
+
 
     /**
      * Start the timer for the pre-capture sequence.
@@ -1767,16 +1720,7 @@ public class RawCollectionFragment extends Fragment
         mCaptureTimer = SystemClock.elapsedRealtime();
     }
 
-    /**
-     * Check if the timer for the pre-capture sequence has been hit.
-     * <p/>
-     * Call this only with {@link #mCameraStateLock} held.
-     *
-     * @return true if the timeout occurred.
-     */
-    private boolean hitTimeoutLocked() {
-        return (SystemClock.elapsedRealtime() - mCaptureTimer) > PRECAPTURE_TIMEOUT_MS;
-    }
+
 
     /**
      * A dialog that explains about the necessary permissions.
@@ -1810,60 +1754,19 @@ public class RawCollectionFragment extends Fragment
         }
 
     }
-    public void setSeekBarISO() {
-        mISO = isoArray[0];
-        mSeekBarISO.setMax(isoArray.length-1);
-        mSeekBarISO.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                mISO = isoArray[progress];
-                mTextViewISO.setText(String.valueOf(mISO));
-            }
 
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {
-                //write custom code to on start progress
-            }
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {
 
-            }
-        });
-    }
 
-    public void setSeekBarShutterSpeed() {
-        double frequency = Math.pow(2, 1+5);
-        mExposureTime = (long) ((1/frequency) * toUS);
-        mSeekBarShutterSpeed.setMax(9);
-        mSeekBarShutterSpeed.setMin(1);
-        mSeekBarShutterSpeed.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                double frequency = Math.pow(2, progress+5);
-                mExposureTime =   (long) ((1/frequency) * toUS);
-                mTextViewShutter.setText("1/"+String.valueOf((int) frequency));
-                Log.e("errpr", "exp is:1/"+(Math.pow(2, (progress+5))));
-                Log.e("errpr", "exp is:"+mExposureTime);
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {
-                //write custom code to on start progress
-            }
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {
-
-            }
-        });
-    }
 
     public void setSeekBarFrames() {
-        mSeekBarFrames.setMax(10);
+        mSeekBarFrames.setMax(50);
+        mSeekBarFrames.setMin(1);
         mSeekBarFrames.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 mFrames=progress;
-                mTextViewFrames.setText(String.valueOf(mFrames));
+                mTextViewFrames.setText("Frames: "+String.valueOf(mFrames));
+                calTotalImages();
             }
 
             @Override
@@ -1884,5 +1787,74 @@ public class RawCollectionFragment extends Fragment
 //                    }
         mRawImageReader.get().setOnImageAvailableListener(
                 mOnRawImageAvailableListener, mBackgroundHandler);
+
+    }
+
+    void initSelection(TextView textView, final String[] stringArray, final ArrayList elementList, final boolean[] selectedArray){
+        textView.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                // Initialize alert dialog
+                AlertDialog.Builder builder = new AlertDialog.Builder(getContext());
+                // set dialog non cancelable
+                builder.setCancelable(false);
+
+                builder.setMultiChoiceItems(stringArray, selectedArray, new DialogInterface.OnMultiChoiceClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialogInterface, int i, boolean b) {
+                        // check condition
+                        if (b) {
+                            // when checkbox selected
+                            // Add position  in lang list
+                            elementList.add(i);
+                            // Sort array list
+                            Collections.sort(elementList);
+                        } else {
+                            // when checkbox unselected
+                            // Remove position from langList
+                            elementList.remove(Integer.valueOf(i));
+                        }
+                    }
+                });
+
+                builder.setPositiveButton("OK", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialogInterface, int i) {
+                        calTotalImages();
+                    }
+                });
+                // show dialog
+                builder.show();
+            }
+        });
+    }
+
+
+    void initOrientationEventListener(){
+        // Setup a new OrientationEventListener.  This is used to handle rotation events like a
+        // 180 degree rotation that do not normally trigger a call to onCreate to do view re-layout
+        // or otherwise cause the preview TextureView's size to change.
+        mOrientationListener = new OrientationEventListener(getActivity(),
+                SensorManager.SENSOR_DELAY_NORMAL) {
+            @Override
+            public void onOrientationChanged(int orientation) {
+                if (mTextureView != null && mTextureView.isAvailable()) {
+                    configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
+                }
+            }
+        };
+    }
+
+    void calTotalImages(){
+        int totalImages = isoList.size()*shutterList.size()*mFrames;
+
+        if(mCheckBoxGt.isChecked()){
+            totalImages += mFrames;
+        }
+
+        int totalMB = (largestRaw.getHeight()*largestRaw.getWidth()*2)/1000000*totalImages;
+
+        showToast("Collect: "+totalImages+" images, estimated cost" + totalMB +"MB.");
+
     }
 }
