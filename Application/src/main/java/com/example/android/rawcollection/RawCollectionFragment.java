@@ -72,6 +72,7 @@ import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
+import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.SeekBar;
@@ -369,7 +370,8 @@ public class RawCollectionFragment extends Fragment
     TextView mTextViewISOSelect;
     TextView mTextViewShutterSelect;
 
-    CheckBox mCheckBoxGt;
+
+    Button mCalibration;
 
     private CameraCaptureSession mPreviewSession;
     private CaptureRequest mPreviewRequest;
@@ -380,28 +382,29 @@ public class RawCollectionFragment extends Fragment
     int mFrames = 1;
     int mFramesIdx = 0;
     int gtISO;
-    int minISO;
     float gtFocalLen;
     long toUS = 1000000000;
     long gtExposureTime;
 
-    int[] isoArray = {50,100,200,400,800,1600,2000} ;
-    String[] isoStringArray = {"50","100","200","400","800","1600","2000"} ;
+    int[] isoArray = {50,100,200,400,800,1500,2000} ;
+    int minISO;
+    long maxExposure;
+    String[] isoStringArray = {"50","100","200","400","800","1500","2000"} ;
     final boolean[] selectedISO = {false,false,false,false,false,false,false};//[isoStringArray.length];
     final ArrayList<Integer> isoList = new ArrayList<>();
 
-    long[] shutterArray = {128, 256, 512, 1024, 2048, 4096, 8192, 16384};
-    String[] shutterStringArray = {"1/128", "1/256", "1/512", "1/1024", "1/2048", "1/4096", "1/8192", "1/16384"} ;
-    final boolean[] selectedShutter = {false,false,false,false,false,false, false, false};
-    final ArrayList<Integer> shutterList = new ArrayList<>();
 
+    int[] shutterGainArray = {2, 5, 10, 20, 50, 100, 200};
+    String[] shutterGainStringArray = {"x2", "x5", "x10", "x20", "x50", "x100", "x200"} ;
+
+    final boolean[] selectedShutter = {false,false,false,false,false,false, false};
+    final ArrayList<Integer> shutterList = new ArrayList<>();
+    final Queue<Integer> shutterGainList = new ArrayDeque<>();
     Queue<CaptureRequest> capRequestList = new ArrayDeque<>();
     Queue<Integer> isGtList = new ArrayDeque<>();
 
     String currentDateTime;
 
-    boolean canAuto = true;
-    private RefCountedAutoCloseable<ImageReader> mRawImageReaderEmpty;
     //**********************************************************************************************
 
     /**
@@ -475,7 +478,6 @@ public class RawCollectionFragment extends Fragment
         @Override
         public void onCaptureStarted(CameraCaptureSession session, CaptureRequest request,
                                      long timestamp, long frameNumber) {
-
         }
 
         @Override
@@ -486,13 +488,28 @@ public class RawCollectionFragment extends Fragment
                 gtExposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
                 gtFocalLen = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
                 minISO = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE).getLower();
-
-                float isoRatio = gtISO / minISO;
-                long gtExposure = (long) (gtExposureTime * isoRatio);
+                maxExposure = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE).getLower();
+                gtExposureTime = (long) (gtISO*gtExposureTime) / minISO;
+                Log.e("error", "GtISO: "+gtISO+"  gtExpo: "+gtExposureTime);
+                Log.e("error", "miniISO: "+minISO+"  gtExpo: "+gtExposureTime);
                 for (int k = 0; k < mFrames; k++) {
                     isGtList.add(1);
-                    capRequestList.add(initManualExposureCapture(minISO, gtExposure, k));
+                    shutterGainList.add(0);
+                    capRequestList.add(initManualExposureCapture(minISO, gtExposureTime, k));
                 }
+
+                for(int isoIdx: isoList){
+                    int iso = isoArray[isoIdx];
+                    long exposure = (long) (gtExposureTime*minISO)/iso;
+                    Log.e("error", "current iso: "+iso+" current exposure:"+exposure+ " gtExpo: "+gtExposureTime);
+                    for (int k = 0; k < mFrames; k++) {
+                        isGtList.add(1);
+                        shutterGainList.add(0);
+                        capRequestList.add(initManualExposureCapture(iso, exposure, k));
+                    }
+                }
+
+
 
                 int requestId = (int) request.getTag();
 
@@ -513,10 +530,8 @@ public class RawCollectionFragment extends Fragment
                 handleCompletionLocked(requestId, rawBuilder, mRawResultQueue);
 
                 showToast(sb.toString());
-//            ImageSaver.ImageSaverBuilder rawBuilder;
-//            int requestId = (int) request.getTag();
-//            rawBuilder = mRawResultQueue.get(requestId);
             }
+            takePicture();
         }
 
         @Override
@@ -525,7 +540,6 @@ public class RawCollectionFragment extends Fragment
             int requestId = (int) request.getTag();
             synchronized (mCameraStateLock) {
                 mRawResultQueue.remove(requestId);
-//                finishedCaptureLocked();
             }
             showToast("Capture failed!");
         }
@@ -548,14 +562,14 @@ public class RawCollectionFragment extends Fragment
             // Look up the ImageSaverBuilder for this request and update it with the CaptureResult
             int iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
             long exposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
-            int frequency = (int) (1/((float) exposureTime/toUS));
+            long frequency = (long) (1/((float) exposureTime/toUS));
             int isGtFlag =  isGtList.remove();
-
+            int shutterGain = shutterGainList.remove();
             File rawFile = new File(Environment.
                     getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
-                    "RAW_" + currentDateTime + "_"+ iso + "_" + frequency + "_"+ isGtFlag + "_" + mFramesIdx + ".dng");
+                    "RAW_" + currentDateTime + "_"+ iso + "_" + frequency + "_" + shutterGain +"_"+ isGtFlag + "_" + mFramesIdx + ".dng");
             int tag = (int) request.getTag();
-
+            Log.e("error", "into Completed");
             synchronized (mCameraStateLock) {
                 rawBuilder = mRawResultQueue.get(requestId);
                 if (rawBuilder != null) {
@@ -593,8 +607,29 @@ public class RawCollectionFragment extends Fragment
         }
 
     };
-    
-    
+
+    private final CameraCaptureSession.CaptureCallback mPreviewCallback
+            = new CameraCaptureSession.CaptureCallback() {
+        @Override
+        public void onCaptureStarted(CameraCaptureSession session, CaptureRequest request,
+                                     long timestamp, long frameNumber) {
+        }
+
+        @Override
+        public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request,
+                                       TotalCaptureResult result) {
+            int iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
+            long exposureTime = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+            long frequency = (long) (1/((float) exposureTime/toUS));
+            Log.e("error", "preview ISO: "+iso+" shutter:"+frequency);
+        }
+
+        @Override
+        public void onCaptureFailed(CameraCaptureSession session, CaptureRequest request,
+                                    CaptureFailure failure) {
+        }
+
+    };
     /**
      * A {@link Handler} for showing {@link Toast}s on the UI thread.
      */
@@ -627,10 +662,10 @@ public class RawCollectionFragment extends Fragment
 
                 switch(keyCode) {
                     case KeyEvent.KEYCODE_VOLUME_UP:
-                        takePicture();
+                        calibration();
                         return true;
                     case KeyEvent.KEYCODE_VOLUME_DOWN:
-                        takePicture();
+                        calibration();
                         return true;
                     default:
                         return false;
@@ -647,6 +682,7 @@ public class RawCollectionFragment extends Fragment
     @Override
     public void onViewCreated(final View view, Bundle savedInstanceState) {
         view.findViewById(R.id.picture).setOnClickListener(this);
+//        view.findViewById(R.id.buttonCalibration).setOnClickListener(this);
         mTextureView = (AutoFitTextureView) view.findViewById(R.id.texture);
         mSeekBarFrames = view.findViewById(R.id.seekBarFrames);
         mTextViewFrames = view.findViewById(R.id.textViewFrames);
@@ -655,9 +691,8 @@ public class RawCollectionFragment extends Fragment
         initSelection(mTextViewISOSelect, isoStringArray, isoList, selectedISO);
 
         mTextViewShutterSelect = view.findViewById(R.id.textViewShutterSpeedSelect);
-        initSelection(mTextViewShutterSelect, shutterStringArray, shutterList, selectedShutter);
+        initSelection(mTextViewShutterSelect, shutterGainStringArray, shutterList, selectedShutter);
 
-        mCheckBoxGt = view.findViewById(R.id.checkBoxGt);
 
         initOrientationEventListener();
     }
@@ -710,17 +745,7 @@ public class RawCollectionFragment extends Fragment
     public void onClick(View view) {
         switch (view.getId()) {
             case R.id.picture: {
-                takePicture();
-                break;
-            }
-            case R.id.info: {
-                Activity activity = getActivity();
-                if (null != activity) {
-                    new AlertDialog.Builder(activity)
-                            .setMessage(R.string.intro_message)
-                            .setPositiveButton(android.R.string.ok, null)
-                            .show();
-                }
+                calibration();
                 break;
             }
         }
@@ -964,7 +989,7 @@ public class RawCollectionFragment extends Fragment
                                     // Finally, we start displaying the camera preview.
                                     cameraCaptureSession.setRepeatingRequest(
                                             mPreviewRequestBuilder.build(),
-                                            null, mBackgroundHandler);
+                                            mPreviewCallback, mBackgroundHandler);
 //                                    mState = STATE_PREVIEW;
                                 } catch (CameraAccessException | IllegalStateException e) {
                                     e.printStackTrace();
@@ -1132,23 +1157,29 @@ public class RawCollectionFragment extends Fragment
      */
     private void takePicture() {
         synchronized (mCameraStateLock) {
-            currentDateTime = generateTimestamp();
-            capRequestList = new ArrayDeque<>();
+            for(int isoIdx: isoList){
+                for(int shutterIdx: shutterList){
 
-            if(mCheckBoxGt.isChecked()) {
-                autoExposureCapture();
-            }
+                    int shutterGain = shutterGainArray[shutterIdx];
 
-            for(int iso: isoList){
-                for(int shutter: shutterList){
-                    double frequency = shutterArray[shutter];
-                    mExposureTime = (long) ((1 / frequency) * toUS);
+                    int iso = isoArray[isoIdx];
+                    float isoRatio = iso / minISO;
+                    long gtExposure = (long) (gtExposureTime/isoRatio);
+                    long exposure =  gtExposure/shutterGain;
+
+                    if(exposure<maxExposure){
+                        break;
+                    }
+
                     for (int k = 0; k < mFrames; k++) {
                         isGtList.add(0);
-                        capRequestList.add(initManualExposureCapture(isoArray[iso], mExposureTime, 0));
+                        shutterGainList.add(shutterGain);
+                        capRequestList.add(initManualExposureCapture(iso, exposure, 0));
                     }
                 }
             }
+
+            Log.e("error", "capRequestList.isEmpty()"+capRequestList.isEmpty());
             CaptureRequest request = capRequestList.remove();
             try {
                 mCaptureSession.capture(request, mCaptureCallbackBurst, mBackgroundHandler);
@@ -1156,6 +1187,14 @@ public class RawCollectionFragment extends Fragment
                 e.printStackTrace();
             }
 
+        }
+    }
+
+    void calibration(){
+        currentDateTime = generateTimestamp();
+        capRequestList = new ArrayDeque<>();
+        synchronized (mCameraStateLock) {
+                autoExposureCapture();
         }
     }
 
@@ -1180,7 +1219,7 @@ public class RawCollectionFragment extends Fragment
             ImageSaver.ImageSaverBuilder rawBuilder = new ImageSaver.ImageSaverBuilder(activity)
                     .setCharacteristics(mCharacteristics);
             mRawResultQueue.put((int) request.getTag(), rawBuilder);
-
+            Log.e("error", "capture start");
             mCaptureSession.capture(request, mCaptureCallback, mBackgroundHandler);
 
         } catch (CameraAccessException e) {
@@ -1207,6 +1246,8 @@ public class RawCollectionFragment extends Fragment
             ImageSaver.ImageSaverBuilder rawBuilder = new ImageSaver.ImageSaverBuilder(activity)
                     .setCharacteristics(mCharacteristics);
             mRawResultQueue.put((int) request.getTag(), rawBuilder);
+
+
             return request;
         } catch (CameraAccessException e) {
             e.printStackTrace();
@@ -1711,14 +1752,7 @@ public class RawCollectionFragment extends Fragment
 
 
 
-    /**
-     * Start the timer for the pre-capture sequence.
-     * <p/>
-     * Call this only with {@link #mCameraStateLock} held.
-     */
-    private void startTimerLocked() {
-        mCaptureTimer = SystemClock.elapsedRealtime();
-    }
+
 
 
 
@@ -1846,15 +1880,15 @@ public class RawCollectionFragment extends Fragment
     }
 
     void calTotalImages(){
-        int totalImages = isoList.size()*shutterList.size()*mFrames;
+        int totalImages = isoList.size()*shutterList.size()*mFrames; //Noise images
+            totalImages += mFrames; //MinISO
+            totalImages += isoList.size()*mFrames; //Selected iso GT
+            totalImages += 1; //Auto
 
-        if(mCheckBoxGt.isChecked()){
-            totalImages += mFrames;
-        }
 
         int totalMB = (largestRaw.getHeight()*largestRaw.getWidth()*2)/1000000*totalImages;
 
-        showToast("Collect: "+totalImages+" images, estimated cost" + totalMB +"MB.");
+        showToast("Collect up to: "+totalImages+" images, estimated cost" + totalMB +"MB.");
 
     }
 }
