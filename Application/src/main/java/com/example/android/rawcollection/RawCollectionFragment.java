@@ -386,18 +386,18 @@ public class RawCollectionFragment extends Fragment
     long toUS = 1000000000;
     long gtExposureTime;
 
-    int[] isoArray = {50,100,200,400,800,1500,2000} ;
+    int[] isoArray = {50,100,200,400,800,1500, 1600, 2000, 3200} ;
     int minISO;
     long maxExposure;
-    String[] isoStringArray = {"50","100","200","400","800","1500","2000"} ;
-    final boolean[] selectedISO = {false,false,false,false,false,false,false};//[isoStringArray.length];
+    String[] isoStringArray = {"50","100","200","400","800","1500","1600", "2000", "3200"} ;
+    final boolean[] selectedISO = {false,false,false,false,false,false,false, false, false};//[isoStringArray.length];
     final ArrayList<Integer> isoList = new ArrayList<>();
 
 
-    int[] shutterGainArray = {2, 5, 10, 20, 50, 100, 200};
-    String[] shutterGainStringArray = {"x2", "x5", "x10", "x20", "x50", "x100", "x200"} ;
+    int[] shutterGainArray = {2, 5, 10, 20, 50, 100, 200, 300};
+    String[] shutterGainStringArray = {"x2", "x5", "x10", "x20", "x50", "x100", "x200",  "x300"} ;
 
-    final boolean[] selectedShutter = {false,false,false,false,false,false, false};
+    final boolean[] selectedShutter = {false,false,false,false,false,false, false, false};
     final ArrayList<Integer> shutterList = new ArrayList<>();
     final Queue<Integer> shutterGainList = new ArrayDeque<>();
     Queue<CaptureRequest> capRequestList = new ArrayDeque<>();
@@ -490,8 +490,9 @@ public class RawCollectionFragment extends Fragment
                 minISO = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE).getLower();
                 maxExposure = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE).getLower();
                 gtExposureTime = (long) (gtISO*gtExposureTime) / minISO;
-                Log.e("error", "GtISO: "+gtISO+"  gtExpo: "+gtExposureTime);
-                Log.e("error", "miniISO: "+minISO+"  gtExpo: "+gtExposureTime);
+                int maxISO = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE).getUpper();
+                Log.e("error", "GtISO: "+gtISO+"  gtExpo: "+gtExposureTime+" maxExpo "+  (long) (1/((float) maxExposure/toUS)));
+                Log.e("error", "maxISO:"+maxISO+" miniISO: "+minISO+"  gtExpo: "+gtExposureTime);
                 for (int k = 0; k < mFrames; k++) {
                     isGtList.add(1);
                     shutterGainList.add(0);
