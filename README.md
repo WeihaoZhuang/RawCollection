@@ -1,7 +1,6 @@
 
-Android Camera2Raw Sample
-=========================
+# Android RawCollection
 
-This repo has been migrated to [github.com/android/camera][1]. Please check that repo for future updates. Thank you!
+This implementation is referenced from https://github.com/googlearchive/android-Camera2Raw.
 
-[1]: https://github.com/android/camera
+Collects multiple frames with X times the correct shutter speed.
